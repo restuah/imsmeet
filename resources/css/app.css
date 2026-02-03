@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    html {
+        font-family: "Inter", system-ui, sans-serif;
+    }
+
+    body {
+        @apply bg-gray-50 text-gray-900 antialiased;
+    }
+}
+
+@layer components {
+    .btn {
+        @apply inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed;
+    }
+
+    .btn-primary {
+        @apply btn bg-primary-600 text-white hover:bg-primary-700 focus:ring-primary-500;
+    }
+
+    .btn-secondary {
+        @apply btn bg-gray-100 text-gray-700 hover:bg-gray-200 focus:ring-gray-500;
+    }
+
+    .btn-danger {
+        @apply btn bg-red-600 text-white hover:bg-red-700 focus:ring-red-500;
+    }
+
+    .btn-success {
+        @apply btn bg-green-600 text-white hover:bg-green-700 focus:ring-green-500;
+    }
+
+    .input {
+        @apply block w-full px-3 py-2 border border-gray-300 rounded-lg text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors duration-200;
+    }
+
+    .card {
+        @apply bg-white rounded-xl shadow-sm border border-gray-200;
+    }
+
+    .video-container {
+        @apply relative bg-gray-900 rounded-xl overflow-hidden;
+    }
+
+    .video-tile {
+        @apply relative bg-gray-800 rounded-lg overflow-hidden aspect-video;
+    }
+
+    .control-btn {
+        @apply p-3 rounded-full transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2;
+    }
+
+    .control-btn-active {
+        @apply bg-gray-700 text-white hover:bg-gray-600;
+    }
+
+    .control-btn-inactive {
+        @apply bg-red-500 text-white hover:bg-red-600;
+    }
+}
+
+@layer utilities {
+    .scrollbar-hide {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+
+    .scrollbar-hide::-webkit-scrollbar {
+        display: none;
+    }
+}
+
+/* Video grid layouts */
+.video-grid-1 {
+    grid-template-columns: 1fr;
+}
+
+.video-grid-2 {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+.video-grid-3 {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+.video-grid-4 {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+.video-grid-many {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+@media (min-width: 1024px) {
+    .video-grid-many {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}
