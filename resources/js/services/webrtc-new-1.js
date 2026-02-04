@@ -27,6 +27,7 @@ function encodeSDP(sdp) {
     return btoa(unescape(encodeURIComponent(sdp)));
 }
 
+// Helper: Decode SDP dari Base64
 function decodeSDP(encoded) {
     return decodeURIComponent(escape(atob(encoded)));
 }
@@ -39,7 +40,7 @@ export class WebRTCService {
         this.onRemoveStream = onRemoveStream;
         
         this.localStream = null;
-        this.peers = new Map(); // Map<odtUserId, { pc: RTCPeerConnection, makingOffer: boolean, ignoreOffer: boolean }>
+        this.peers = new Map();
         this.pendingCandidates = new Map();
         
         console.log('[WebRTC] Service initialized for user:', userId);
@@ -77,36 +78,18 @@ export class WebRTCService {
         }
     }
 
-    /**
-     * Determine if we are the "polite" peer
-     * Polite peer will rollback their offer if collision happens
-     */
-    isPolite(remoteUserId) {
-        return this.userId < remoteUserId;
-    }
-
-    createPeer(remoteUserId) {
-        console.log(`[WebRTC] Creating peer for user ${remoteUserId}`);
+    createPeer(remoteUserId, initiator = false) {
+        console.log(`[WebRTC] Creating peer for user ${remoteUserId}, initiator: ${initiator}`);
         
-        // Close existing if any
         if (this.peers.has(remoteUserId)) {
-            const existing = this.peers.get(remoteUserId);
-            existing.pc.close();
+            this.peers.get(remoteUserId).close();
             this.peers.delete(remoteUserId);
         }
 
-        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-        
-        // Peer state
-        const peerState = {
-            pc: pc,
-            makingOffer: false,
-            ignoreOffer: false,
-        };
-        
-        this.peers.set(remoteUserId, peerState);
+        const pc = new RTCPeerConnection({
+            iceServers: ICE_SERVERS,
+        });
 
-        // Add local tracks
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => {
                 console.log(`[WebRTC] Adding track: ${track.kind}`);
@@ -114,25 +97,6 @@ export class WebRTCService {
             });
         }
 
-        // Handle negotiation needed (for creating offers)
-        pc.onnegotiationneeded = async () => {
-            console.log(`[WebRTC] Negotiation needed with ${remoteUserId}`);
-            
-            try {
-                peerState.makingOffer = true;
-                await pc.setLocalDescription();
-                
-                const encodedSdp = encodeSDP(pc.localDescription.sdp);
-                await this.sendSignal(remoteUserId, pc.localDescription.type, encodedSdp);
-                
-            } catch (error) {
-                console.error('[WebRTC] Error during negotiation:', error);
-            } finally {
-                peerState.makingOffer = false;
-            }
-        };
-
-        // Handle ICE candidates
         pc.onicecandidate = (event) => {
             if (event.candidate) {
                 console.log(`[WebRTC] Sending ICE candidate to user ${remoteUserId}`);
@@ -140,26 +104,14 @@ export class WebRTCService {
             }
         };
 
-        // Handle connection state
         pc.onconnectionstatechange = () => {
             console.log(`[WebRTC] Connection state with ${remoteUserId}: ${pc.connectionState}`);
-            
-            if (pc.connectionState === 'connected') {
-                console.log(`[WebRTC] ✅ Connected to user ${remoteUserId}`);
-            }
-            
-            if (pc.connectionState === 'failed') {
-                console.log(`[WebRTC] Connection failed, restarting ICE...`);
-                pc.restartIce();
-            }
         };
 
-        // Handle ICE connection state
         pc.oniceconnectionstatechange = () => {
             console.log(`[WebRTC] ICE state with ${remoteUserId}: ${pc.iceConnectionState}`);
         };
 
-        // Handle remote tracks
         pc.ontrack = (event) => {
             console.log(`[WebRTC] Received track from ${remoteUserId}: ${event.track.kind}`);
             
@@ -168,15 +120,44 @@ export class WebRTCService {
             }
         };
 
-        return peerState;
+        this.peers.set(remoteUserId, pc);
+
+        if (initiator) {
+            this.createOffer(remoteUserId);
+        }
+
+        return pc;
     }
 
-    /**
-     * Handle incoming signal with "Perfect Negotiation" pattern
-     */
+    async createOffer(remoteUserId) {
+        const pc = this.peers.get(remoteUserId);
+        if (!pc) return;
+
+        try {
+            console.log(`[WebRTC] Creating offer for user ${remoteUserId}`);
+            
+            const offer = await pc.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true,
+            });
+            
+            await pc.setLocalDescription(offer);
+            
+            // Encode SDP sebelum kirim
+            const encodedSdp = encodeSDP(offer.sdp);
+            
+            console.log(`[WebRTC] Sending offer to user ${remoteUserId}`);
+            await this.sendSignal(remoteUserId, 'offer', encodedSdp);
+            
+        } catch (error) {
+            console.error(`[WebRTC] Failed to create offer:`, error);
+        }
+    }
+
     async handleSignal(fromUserId, type, encodedSdp) {
         console.log(`[WebRTC] Received ${type} from user ${fromUserId}`);
         
+        // Decode SDP
         let sdp;
         try {
             sdp = decodeSDP(encodedSdp);
@@ -184,65 +165,61 @@ export class WebRTCService {
             console.error('[WebRTC] Failed to decode SDP:', e);
             return;
         }
-
-        // Get or create peer
-        let peerState = this.peers.get(fromUserId);
-        if (!peerState) {
-            peerState = this.createPeer(fromUserId);
-        }
         
-        const pc = peerState.pc;
-        const polite = this.isPolite(fromUserId);
+        let pc = this.peers.get(fromUserId);
         
-        try {
-            // Check for offer collision
-            const offerCollision = (type === 'offer') && 
-                (peerState.makingOffer || pc.signalingState !== 'stable');
-            
-            peerState.ignoreOffer = !polite && offerCollision;
-            
-            if (peerState.ignoreOffer) {
-                console.log(`[WebRTC] Ignoring offer from ${fromUserId} (collision, we are impolite)`);
-                return;
+        if (type === 'offer') {
+            if (!pc) {
+                pc = this.createPeer(fromUserId, false);
             }
             
-            if (type === 'offer') {
-                // If we have a pending offer, rollback first (polite peer)
-                if (pc.signalingState !== 'stable') {
-                    console.log(`[WebRTC] Rolling back local description (polite peer)`);
-                    await pc.setLocalDescription({ type: 'rollback' });
-                }
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription({
+                    type: 'offer',
+                    sdp: sdp,
+                }));
                 
-                await pc.setRemoteDescription({ type: 'offer', sdp: sdp });
                 await this.applyPendingCandidates(fromUserId);
                 
-                // Create and send answer
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
                 
-                const encodedAnswer = encodeSDP(pc.localDescription.sdp);
+                // Encode SDP sebelum kirim
+                const encodedAnswer = encodeSDP(answer.sdp);
+                
                 console.log(`[WebRTC] Sending answer to user ${fromUserId}`);
                 await this.sendSignal(fromUserId, 'answer', encodedAnswer);
                 
-            } else if (type === 'answer') {
-                // Only accept answer if we're expecting one
-                if (pc.signalingState === 'have-local-offer') {
-                    await pc.setRemoteDescription({ type: 'answer', sdp: sdp });
-                    await this.applyPendingCandidates(fromUserId);
-                } else {
-                    console.log(`[WebRTC] Ignoring answer, wrong state: ${pc.signalingState}`);
-                }
+            } catch (error) {
+                console.error(`[WebRTC] Failed to handle offer:`, error);
             }
             
-        } catch (error) {
-            console.error(`[WebRTC] Failed to handle ${type}:`, error);
+        } else if (type === 'answer') {
+            if (!pc) {
+                console.error(`[WebRTC] No peer connection for answer from ${fromUserId}`);
+                return;
+            }
+            
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: sdp,
+                }));
+                
+                await this.applyPendingCandidates(fromUserId);
+                
+            } catch (error) {
+                console.error(`[WebRTC] Failed to handle answer:`, error);
+            }
         }
     }
 
     async handleIceCandidate(fromUserId, candidate) {
-        const peerState = this.peers.get(fromUserId);
+        console.log(`[WebRTC] Received ICE candidate from user ${fromUserId}`);
         
-        if (!peerState || !peerState.pc.remoteDescription) {
+        const pc = this.peers.get(fromUserId);
+        
+        if (!pc || !pc.remoteDescription) {
             console.log(`[WebRTC] Queuing ICE candidate for user ${fromUserId}`);
             if (!this.pendingCandidates.has(fromUserId)) {
                 this.pendingCandidates.set(fromUserId, []);
@@ -252,12 +229,10 @@ export class WebRTCService {
         }
         
         try {
-            await peerState.pc.addIceCandidate(new RTCIceCandidate(candidate));
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
             console.log(`[WebRTC] Added ICE candidate from user ${fromUserId}`);
         } catch (error) {
-            if (!peerState.ignoreOffer) {
-                console.error(`[WebRTC] Failed to add ICE candidate:`, error);
-            }
+            console.error(`[WebRTC] Failed to add ICE candidate:`, error);
         }
     }
 
@@ -265,14 +240,14 @@ export class WebRTCService {
         const candidates = this.pendingCandidates.get(userId);
         if (!candidates || candidates.length === 0) return;
         
-        const peerState = this.peers.get(userId);
-        if (!peerState) return;
+        const pc = this.peers.get(userId);
+        if (!pc) return;
         
         console.log(`[WebRTC] Applying ${candidates.length} pending candidates for user ${userId}`);
         
         for (const candidate of candidates) {
             try {
-                await peerState.pc.addIceCandidate(new RTCIceCandidate(candidate));
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
             } catch (error) {
                 console.error('[WebRTC] Failed to add pending candidate:', error);
             }
@@ -290,6 +265,7 @@ export class WebRTCService {
                 type: type,
                 sdp: sdp,
             });
+            console.log(`[WebRTC] Signal sent successfully`);
         } catch (error) {
             console.error('[WebRTC] Failed to send signal:', error.response?.data || error);
         }
@@ -306,23 +282,17 @@ export class WebRTCService {
         }
     }
 
-    /**
-     * Connect to participant - just create peer, negotiation will happen automatically
-     */
     connectToParticipant(userId) {
         console.log(`[WebRTC] Connecting to participant ${userId}`);
-        
-        if (!this.peers.has(userId)) {
-            this.createPeer(userId);
-        }
+        this.createPeer(userId, true);
     }
 
     disconnectFromParticipant(userId) {
         console.log(`[WebRTC] Disconnecting from participant ${userId}`);
         
-        const peerState = this.peers.get(userId);
-        if (peerState) {
-            peerState.pc.close();
+        const pc = this.peers.get(userId);
+        if (pc) {
+            pc.close();
             this.peers.delete(userId);
         }
         
@@ -355,8 +325,8 @@ export class WebRTCService {
             
             const screenTrack = screenStream.getVideoTracks()[0];
             
-            this.peers.forEach((peerState) => {
-                const sender = peerState.pc.getSenders().find(s => s.track?.kind === 'video');
+            this.peers.forEach((pc, odtUserId) => {
+                const sender = pc.getSenders().find(s => s.track?.kind === 'video');
                 if (sender) {
                     sender.replaceTrack(screenTrack);
                 }
@@ -380,8 +350,8 @@ export class WebRTCService {
         const videoTrack = this.localStream.getVideoTracks()[0];
         if (!videoTrack) return;
         
-        this.peers.forEach((peerState) => {
-            const sender = peerState.pc.getSenders().find(s => s.track?.kind === 'video');
+        this.peers.forEach((pc) => {
+            const sender = pc.getSenders().find(s => s.track?.kind === 'video');
             if (sender) {
                 sender.replaceTrack(videoTrack);
             }
@@ -391,8 +361,8 @@ export class WebRTCService {
     destroy() {
         console.log('[WebRTC] Destroying service...');
         
-        this.peers.forEach((peerState) => {
-            peerState.pc.close();
+        this.peers.forEach((pc) => {
+            pc.close();
         });
         this.peers.clear();
         this.pendingCandidates.clear();

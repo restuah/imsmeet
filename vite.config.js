@@ -24,10 +24,5 @@ export default defineConfig({
     },
     define: {
         global: "globalThis",
-        "process.env": {},
-    },
-    server: {
-        host: "192.168.0.4",
-        port: 5173,
     },
 });
