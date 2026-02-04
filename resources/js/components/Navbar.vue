@@ -18,7 +18,7 @@
                             />
                         </svg>
                         <span class="ml-2 text-xl font-bold text-gray-900"
-                            >MeetApp</span
+                            >IMSMeet Beta</span
                         >
                     </router-link>
 
