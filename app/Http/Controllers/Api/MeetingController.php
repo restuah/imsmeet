@@ -9,6 +9,7 @@ use App\Events\MeetingStarted;
 use App\Events\MeetingEnded;
 use App\Events\ParticipantJoined;
 use App\Events\ParticipantLeft;
+use App\Events\ParticipantUpdated;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -23,9 +24,18 @@ class MeetingController extends Controller
             ->withCount('activeParticipants');
 
         // Non-admin users only see their own meetings
+        // if (!$user->isAdmin()) {
+        //     $query->where(function ($q) use ($user) {
+        //         $q->where('host_id', $user->id)
+        //             ->orWhereHas('participants', function ($q) use ($user) {
+        //                 $q->where('user_id', $user->id);
+        //             });
+        //     });
+        // }
         if (!$user->isAdmin()) {
             $query->where(function ($q) use ($user) {
-                $q->where('host_id', $user->id)
+                $q->where('status', 'active')
+                    ->orWhere('host_id', $user->id)
                     ->orWhereHas('participants', function ($q) use ($user) {
                         $q->where('user_id', $user->id);
                     });
@@ -175,7 +185,8 @@ class MeetingController extends Controller
 
         $meeting->end();
 
-        broadcast(new MeetingEnded($meeting))->toOthers();
+        // broadcast(new MeetingEnded($meeting))->toOthers();
+        broadcast(new MeetingEnded($meeting));
 
         return response()->json([
             'meeting' => $meeting->fresh(),
@@ -183,6 +194,7 @@ class MeetingController extends Controller
         ]);
     }
 
+    /*
     public function join(Request $request, Meeting $meeting): JsonResponse
     {
         $user = $request->user();
@@ -191,6 +203,93 @@ class MeetingController extends Controller
             'password' => ['nullable', 'string'],
             'display_name' => ['nullable', 'string', 'max:255'],
         ]);
+
+        // Check password if required
+        if ($meeting->hasPassword()) {
+            if (!isset($validated['password']) || !$meeting->verifyPassword($validated['password'])) {
+                return response()->json([
+                    'message' => 'Invalid meeting password',
+                ], 403);
+            }
+        }
+
+        // Check if user can join
+        if (!$meeting->canUserJoin($user)) {
+            return response()->json([
+                'message' => 'Cannot join this meeting',
+            ], 403);
+        }
+
+        if ($meeting->isEnded()) {
+            return response()->json([
+                'message' => 'This meeting has ended and cannot be rejoined',
+            ], 403);
+        }
+
+        // Get or create participant record
+        $participant = MeetingParticipant::firstOrCreate(
+            [
+                'meeting_id' => $meeting->id,
+                'user_id' => $user->id,
+            ],
+            [
+                'display_name' => $validated['display_name'] ?? $user->name,
+                'role' => $meeting->isHost($user) ? 'host' : 'participant',
+            ]
+        );
+
+        $participant->update([
+            'is_muted' => false,        // Reset ke unmuted
+            'is_video_off' => false,    // Reset ke video on
+            'is_hand_raised' => false,  // Reset hand
+            'is_screen_sharing' => false,
+            'left_at' => null,          // Clear left_at
+        ]);
+
+        // If waiting room is enabled and user is not host/co-host
+        if ($meeting->waiting_room_enabled && !$participant->canManageParticipants()) {
+            $participant->update([
+                'is_in_waiting_room' => true,
+            ]);
+
+            return response()->json([
+                'meeting' => $meeting->load('host:id,name,email,avatar'),
+                'participant' => $participant,
+                'in_waiting_room' => true,
+                'message' => 'You are in the waiting room',
+            ]);
+        }
+
+        $participant->join();
+
+        broadcast(new ParticipantJoined($meeting, $participant))->toOthers();
+
+        return response()->json([
+            'meeting' => $meeting->load([
+                'host:id,name,email,avatar',
+                'activeParticipants.user:id,name,email,avatar',
+            ]),
+            'participant' => $participant,
+            'in_waiting_room' => false,
+            'message' => 'Joined meeting successfully',
+        ]);
+    }
+    */
+    public function join(Request $request, Meeting $meeting): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'password' => ['nullable', 'string'],
+            'display_name' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        // Check if meeting is ended
+        if ($meeting->isEnded()) {
+            return response()->json([
+                'message' => 'This meeting has ended',
+            ], 403);
+        }
 
         // Check password if required
         if ($meeting->hasPassword()) {
@@ -219,6 +318,15 @@ class MeetingController extends Controller
                 'role' => $meeting->isHost($user) ? 'host' : 'participant',
             ]
         );
+
+        // CRITICAL: Reset media state on rejoin
+        $participant->update([
+            'is_muted' => false,
+            'is_video_off' => false,
+            'is_hand_raised' => false,
+            'is_screen_sharing' => false,
+            'left_at' => null,
+        ]);
 
         // If waiting room is enabled and user is not host/co-host
         if ($meeting->waiting_room_enabled && !$participant->canManageParticipants()) {
@@ -249,6 +357,7 @@ class MeetingController extends Controller
         ]);
     }
 
+    /*
     public function leave(Request $request, Meeting $meeting): JsonResponse
     {
         $user = $request->user();
@@ -288,6 +397,56 @@ class MeetingController extends Controller
             'message' => 'Left meeting successfully',
         ]);
     }
+    */
+    public function leave(Request $request, Meeting $meeting): JsonResponse
+    {
+        $user = $request->user();
+
+        $participant = $meeting->participants()
+            ->where('user_id', $user->id)
+            ->whereNotNull('joined_at')
+            ->whereNull('left_at')
+            ->first();
+
+        if (!$participant) {
+            return response()->json([
+                'message' => 'You are not in this meeting',
+            ], 422);
+        }
+
+        // Reset all participant state before leaving
+        $participant->update([
+            'is_muted' => false,
+            'is_video_off' => false,
+            'is_hand_raised' => false,
+            'is_screen_sharing' => false,
+        ]);
+
+        $participant->leave();
+
+        // Broadcast to all others
+        broadcast(new ParticipantLeft($meeting, $participant))->toOthers();
+
+        // Handle host leaving
+        if ($participant->isHost() && $meeting->isActive()) {
+            $newHost = $meeting->activeParticipants()
+                ->whereIn('role', ['co-host', 'participant'])
+                ->orderByRaw("FIELD(role, 'co-host', 'participant')")
+                ->first();
+
+            if ($newHost) {
+                $newHost->update(['role' => 'host']);
+                broadcast(new ParticipantUpdated($meeting, $newHost))->toOthers();
+            } else {
+                $meeting->end();
+                broadcast(new MeetingEnded($meeting));
+            }
+        }
+
+        return response()->json([
+            'message' => 'Left meeting successfully',
+        ]);
+    }
 
     public function joinByUuid(Request $request, string $uuid): JsonResponse
     {
@@ -304,6 +463,66 @@ class MeetingController extends Controller
                 'is_chat_enabled' => $meeting->is_chat_enabled,
                 'is_whiteboard_enabled' => $meeting->is_whiteboard_enabled,
             ],
+        ]);
+    }
+
+    public function getIceServers(Request $request, Meeting $meeting): JsonResponse
+    {
+        // Verify user is participant
+        $participant = $meeting->participants()
+            ->where('user_id', $request->user()->id)
+            ->whereNotNull('joined_at')
+            ->whereNull('left_at')
+            ->first();
+
+        if (!$participant) {
+            return response()->json([
+                'message' => 'You are not in this meeting',
+            ], 403);
+        }
+
+        // Generate time-limited TURN credentials
+        $turnSecret = config('webrtc.turn_secret', env('TURN_SECRET'));
+        $turnServer = config('webrtc.turn_server', env('TURN_SERVER', 'imsmeet.ichijoumanagementsystem.co.id'));
+        $turnUsername = config('webrtc.turn_username', env('TURN_USERNAME', 'imsmeetuser'));
+        $turnPassword = config('webrtc.turn_password', env('TURN_PASSWORD', 'imsmeetp@ssword'));
+
+        // For production, use time-limited credentials:
+        // $timestamp = time() + 24 * 3600; // 24 hours validity
+        // $username = $timestamp . ':' . $request->user()->id;
+        // $credential = base64_encode(hash_hmac('sha1', $username, $turnSecret, true));
+
+        $iceServers = [
+            // STUN servers (public)
+            ['urls' => 'stun:stun.l.google.com:19302'],
+            ['urls' => 'stun:stun.l.google.com:5349'],
+            ['urls' => 'stun:stun1.l.google.com:3478'],
+            ['urls' => 'stun:stun1.l.google.com:5349'],
+            ['urls' => 'stun:stun2.l.google.com:19302'],
+            ['urls' => 'stun:stun2.l.google.com:5349'],
+            ['urls' => 'stun:stun3.l.google.com:3478'],
+            ['urls' => 'stun:stun3.l.google.com:5349'],
+            ['urls' => 'stun:stun4.l.google.com:19302'],
+            ['urls' => 'stun:stun4.l.google.com:5349']
+        ];
+
+        // Add TURN server if configured
+        if ($turnServer) {
+            $iceServers[] = [
+                'urls' => "turn:{$turnServer}:3478",
+                'username' => $turnUsername,
+                'credential' => $turnPassword,
+            ];
+
+            $iceServers[] = [
+                'urls' => "turns:{$turnServer}:5349",
+                'username' => $turnUsername,
+                'credential' => $turnPassword,
+            ];
+        }
+
+        return response()->json([
+            'iceServers' => $iceServers,
         ]);
     }
 }

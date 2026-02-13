@@ -50,6 +50,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Signaling for WebRTC
     Route::post('/meetings/{meeting}/signal', [SignalingController::class, 'signal']);
     Route::post('/meetings/{meeting}/ice-candidate', [SignalingController::class, 'iceCandidate']);
+    Route::get('/meetings/{meeting}/ice-servers', [MeetingController::class, 'getIceServers']);
 
     // Chat
     Route::get('/meetings/{meeting}/messages', [ChatController::class, 'index']);
