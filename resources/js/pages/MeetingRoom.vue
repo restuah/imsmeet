@@ -1295,12 +1295,12 @@ const handlePromoteParticipant = async (participant) => {
 };
 
 const handleLeaveMeeting = async () => {
-  cleanup();
   try {
     await meetingStore.leaveMeeting(meeting.value.id);
   } catch (e) {
     /* ignore */
   }
+  cleanup();
   router.push("/dashboard");
 };
 

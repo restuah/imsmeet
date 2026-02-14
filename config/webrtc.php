@@ -6,9 +6,9 @@ return [
     | TURN Server Configuration
     |--------------------------------------------------------------------------
     */
-    'turn_server' => env('TURN_SERVER', 'coturn.rrstuah.my.id'),
-    'turn_username' => env('TURN_USERNAME', 'imsmeetuser'),
-    'turn_password' => env('TURN_PASSWORD', 'imsmeetp@ssword'),
+    'turn_server' => env('TURN_SERVER', 'domainanda.com'),
+    'turn_username' => env('TURN_USERNAME', 'username'),
+    'turn_password' => env('TURN_PASSWORD', 'pasword'),
     'turn_secret' => env('TURN_SECRET', ''),
     
     /*

@@ -6,14 +6,14 @@ const ICE_SERVERS = [
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     {
-        urls: 'turn:coturn.rrstuah.my.id:3478', // Port standar
-        username: 'imsmeetuser',
-        credential: 'imsmeetp@ssword',
+        urls: 'turn:domainanda.com:3478', // Port standar
+        username: 'username',
+        credential: 'password',
     },
     {
-        urls: 'turns:coturn.rrstuah.my.id:5349', // Port TLS/SSL
-        username: 'imsmeetuser',
-        credential: 'imsmeetp@ssword',
+        urls: 'turns:domainanda.com:5349', // Port TLS/SSL
+        username: 'username',
+        credential: 'password',
     }
     // Tambahkan TURN server untuk production
     // {
